@@ -25,7 +25,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
+# Инициализируем БД при старте приложения (для gunicorn)
+init_db()
 
 # =========================================================
 # DB
@@ -298,7 +299,3 @@ def health():
 # START
 # =========================================================
 
-if __name__ == "__main__":
-    init_db()
-    log.info(f"Сервер запущен на порту {PORT}")
-    app.run(host="0.0.0.0", port=PORT)
