@@ -115,9 +115,6 @@ NFT_PATTERNS = [
     r"\bfree mint\b",
     r"\bmint\b",
     r"\bpfp\b",
-    r"\bethereum\b",
-    r"\beth\b",
-    r"\bsolana\b",
 ]
 
 
@@ -160,7 +157,7 @@ def text_matches_any(text: str, patterns: list[str]) -> bool:
     return False
 
 
-def parse_deadline(obj: dict) -> str:
+def parse_deadline_dt(obj: dict):
     raw = deep_get(
         obj,
         "endDate", "end_date", "endAt", "end_at",
@@ -170,23 +167,33 @@ def parse_deadline(obj: dict) -> str:
     )
 
     if not raw or raw == "—":
-        return "—"
-
-    dt = None
+        return None
 
     try:
         ts = float(raw)
         if ts > 1e10:
             ts /= 1000
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
     except (ValueError, TypeError):
         pass
 
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def parse_deadline(obj: dict) -> str:
+    dt = parse_deadline_dt(obj)
     if dt is None:
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except Exception:
-            return str(raw)
+        raw = deep_get(
+            obj,
+            "endDate", "end_date", "endAt", "end_at",
+            "closingDate", "closing_date",
+            "deadline", "endsAt", "ends_at",
+            default="—"
+        )
+        return raw
 
     date_str = dt.strftime("%d.%m.%Y %H:%M UTC")
     diff = dt - datetime.now(timezone.utc)
@@ -207,6 +214,13 @@ def parse_deadline(obj: dict) -> str:
         remaining = f"{minutes}m до конца"
 
     return f"{date_str} ({remaining})"
+
+
+def is_finished(obj: dict) -> bool:
+    dt = parse_deadline_dt(obj)
+    if dt is None:
+        return False
+    return dt <= datetime.now(timezone.utc)
 
 
 # =========================================================
@@ -304,6 +318,7 @@ def parse_raffle(obj: dict) -> dict:
         "winners": winners,
         "participants": participants,
         "deadline": parse_deadline(obj),
+        "finished": is_finished(obj),
         "_category_text": category_text,
     }
 
@@ -362,7 +377,7 @@ def format_message(r: dict, categories: list[str]) -> str:
     else:
         header = f"🎯 <b>{title}</b>"
 
-    lines = [
+    return "\n".join([
         header,
         "",
         f"🏷 <b>Категории:</b> {categories_text}",
@@ -370,8 +385,7 @@ def format_message(r: dict, categories: list[str]) -> str:
         f"🥇 <b>Победных мест:</b> {winners}",
         f"👥 <b>Участников:</b> {participants}",
         f"⏰ <b>Дедлайн:</b> {deadline}",
-    ]
-    return "\n".join(lines)
+    ])
 
 
 def send_telegram(text: str):
@@ -458,11 +472,17 @@ def process_webhook_payload(payload):
             f"winners={raffle['winners']}, "
             f"participants={raffle['participants']}, "
             f"deadline={raffle['deadline']}, "
+            f"finished={raffle['finished']}, "
             f"categories={categories}"
         )
 
         if was_seen(raffle["id"]):
             log.info(f"Уже видели: {raffle['title']}")
+            continue
+
+        if raffle["finished"]:
+            log.info(f"Пропуск завершённого рафла: {raffle['title']}")
+            mark_seen(raffle["id"], raffle["title"])
             continue
 
         if not passes_enabled_filters(categories):
