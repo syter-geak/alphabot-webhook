@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
 
 # =========================================================
@@ -16,10 +16,15 @@ from flask import Flask, request, jsonify
 # =========================================================
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-ALPHABOT_API_KEY   = os.environ.get("ALPHABOT_API_KEY", "")  # пока не используется
-PORT               = int(os.environ.get("PORT", 5000))
-DB_PATH            = "seen.db"
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+ALPHABOT_API_KEY = os.environ.get("ALPHABOT_API_KEY", "")  # пока не используется
+PORT = int(os.environ.get("PORT", 5000))
+DB_PATH = "seen.db"
+
+# Переключатели категорий
+NFT_RAFFLE = True
+WL_RAFFLE = True
+TOKEN_RAFFLE = True
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -34,8 +39,8 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS seen (
             raffle_id TEXT PRIMARY KEY,
-            title     TEXT,
-            seen_at   TEXT
+            title TEXT,
+            seen_at TEXT
         )
     """)
     conn.commit()
@@ -73,50 +78,47 @@ app = Flask(__name__)
 
 
 # =========================================================
-# FILTER
+# PATTERNS
 # =========================================================
 
-NEGATIVE_PATTERNS = [
+TOKEN_PATTERNS = [
+    r"\$\s?\d",
+    r"\b\d+[\d,.]*\s?(?:usd|usdt|usdc)\b",
+    r"\b\d+[\d,.]*\s?(?:eth|btc|sol|bnb|ton|matic|arb|op|sui|apt|avax|near|ftm|link|dot|ada)\b",
+    r"\b\d[\d,.]*\s?\$[a-z]{2,20}\b",
+    r"\$[a-z]{2,20}\s+(?:token|airdrop|reward|prize)",
+    r"\btoken\s+(?:reward|rewards|prize|prizes)\b",
+    r"\bcash\s+prize\b",
+    r"\b(?:prize|reward)\s+pool\b",
+    r"\bairdrop\b",
+]
+
+WL_PATTERNS = [
     r"\bwl\b",
     r"whitelist",
     r"white list",
     r"allowlist",
     r"allow list",
     r"\bfcfs\b",
+    r"\bgtd\b",
     r"\bmint\b",
     r"mint spot",
     r"guaranteed mint",
     r"\bspots?\b",
     r"early access",
     r"presale access",
-    r"nft access",
 ]
 
-POSITIVE_PATTERNS = [
-    r"\$\s?\d",
-    r"\b\d+[\d,.]*\s?(?:usd|usdt|usdc)\b",
-    r"\b\d+[\d,.]*\s?(?:eth|btc|sol|bnb|ton|matic|arb|op|sui|apt|avax|near|ftm|link|dot|ada)\b",
-    r"\b\d[\d,.]*\s?\$[a-z]{2,20}\b",
-    r"\$[a-z]{2,20}\s+(?:token|airdrop|reward|prize)",
-    r"\btoken\s+(?:reward|prize)\b",
-    r"\bcash\s+prize\b",
-    r"\b(?:prize|reward)\s+pool\b",
-    r"\bairdrop\b",
+NFT_PATTERNS = [
+    r"\bnft\b",
+    r"\bcollection\b",
+    r"\bfree mint\b",
+    r"\bmint\b",
+    r"\bpfp\b",
+    r"\bethereum\b",
+    r"\beth\b",
+    r"\bsolana\b",
 ]
-
-
-def passes_filter(text: str) -> bool:
-    t = (text or "").lower()
-
-    for pattern in NEGATIVE_PATTERNS:
-        if re.search(pattern, t, re.IGNORECASE):
-            return False
-
-    for pattern in POSITIVE_PATTERNS:
-        if re.search(pattern, t, re.IGNORECASE):
-            return True
-
-    return False
 
 
 # =========================================================
@@ -148,6 +150,14 @@ def deep_get(obj, *paths, default="—"):
                 return text.strip()
 
     return default
+
+
+def text_matches_any(text: str, patterns: list[str]) -> bool:
+    t = (text or "").lower()
+    for pattern in patterns:
+        if re.search(pattern, t, re.IGNORECASE):
+            return True
+    return False
 
 
 def parse_deadline(obj: dict) -> str:
@@ -199,10 +209,16 @@ def parse_deadline(obj: dict) -> str:
     return f"{date_str} ({remaining})"
 
 
+# =========================================================
+# PARSE
+# =========================================================
+
 def parse_raffle(obj: dict) -> dict:
     raffle_id = deep_get(obj, "id", "_id", "uuid", "slug", "raffleId", default=None)
     if not raffle_id or raffle_id == "—":
-        raffle_id = hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        raffle_id = hashlib.sha1(
+            json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
 
     title = deep_get(
         obj,
@@ -236,10 +252,10 @@ def parse_raffle(obj: dict) -> dict:
         "rewardPool",
         "reward_pool",
         "subtitle",
-        "description",
-        "reqString",
         default="—"
     )
+
+    description = deep_get(obj, "description", default="—")
 
     winners = deep_get(
         obj,
@@ -268,15 +284,14 @@ def parse_raffle(obj: dict) -> dict:
         default="—"
     )
 
-    filter_text = " ".join([
+    category_text = " ".join([
         str(title),
         str(reward),
+        str(description),
         str(deep_get(obj, "type", default="")),
         str(deep_get(obj, "tags", default="")),
         str(deep_get(obj, "reqString", default="")),
         str(deep_get(obj, "weblinkUrlTitle", default="")),
-        str(deep_get(obj, "description", default="")),
-        str(deep_get(obj, "subtitle", default="")),
         str(deep_get(obj, "blockchain", default="")),
     ])
 
@@ -285,23 +300,61 @@ def parse_raffle(obj: dict) -> dict:
         "title": title,
         "url": url,
         "reward": reward,
+        "description": description,
         "winners": winners,
         "participants": participants,
         "deadline": parse_deadline(obj),
-        "_filter_text": filter_text,
+        "_category_text": category_text,
     }
+
+
+# =========================================================
+# CATEGORIES
+# =========================================================
+
+def detect_categories(raffle: dict) -> list[str]:
+    text = raffle["_category_text"]
+    matched = []
+
+    if text_matches_any(text, NFT_PATTERNS):
+        matched.append("NFT")
+
+    if text_matches_any(text, WL_PATTERNS):
+        matched.append("WL")
+
+    if text_matches_any(text, TOKEN_PATTERNS):
+        matched.append("TOKEN")
+
+    return matched
+
+
+def passes_enabled_filters(categories: list[str]) -> bool:
+    enabled = []
+
+    if NFT_RAFFLE:
+        enabled.append("NFT")
+    if WL_RAFFLE:
+        enabled.append("WL")
+    if TOKEN_RAFFLE:
+        enabled.append("TOKEN")
+
+    if not enabled:
+        return False
+
+    return any(cat in categories for cat in enabled)
 
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def format_message(r: dict) -> str:
+def format_message(r: dict, categories: list[str]) -> str:
     title = html_lib.escape(str(r["title"]))
     reward = html_lib.escape(str(r["reward"]))
     winners = html_lib.escape(str(r["winners"]))
     participants = html_lib.escape(str(r["participants"]))
     deadline = html_lib.escape(str(r["deadline"]))
+    categories_text = html_lib.escape(", ".join(categories) if categories else "UNKNOWN")
     url = str(r["url"]).replace('"', "%22").strip()
 
     if url and url != "—":
@@ -309,14 +362,16 @@ def format_message(r: dict) -> str:
     else:
         header = f"🎯 <b>{title}</b>"
 
-    return "\n".join([
+    lines = [
         header,
         "",
+        f"🏷 <b>Категории:</b> {categories_text}",
         f"🏆 <b>Награда / пул:</b> {reward}",
         f"🥇 <b>Победных мест:</b> {winners}",
         f"👥 <b>Участников:</b> {participants}",
         f"⏰ <b>Дедлайн:</b> {deadline}",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def send_telegram(text: str):
@@ -394,6 +449,7 @@ def process_webhook_payload(payload):
         log.info(f"Ключи raffle object: {list(obj.keys())[:50]}")
 
         raffle = parse_raffle(obj)
+        categories = detect_categories(raffle)
 
         log.info(
             "Разобрано: "
@@ -401,20 +457,21 @@ def process_webhook_payload(payload):
             f"reward={raffle['reward']}, "
             f"winners={raffle['winners']}, "
             f"participants={raffle['participants']}, "
-            f"deadline={raffle['deadline']}"
+            f"deadline={raffle['deadline']}, "
+            f"categories={categories}"
         )
 
         if was_seen(raffle["id"]):
             log.info(f"Уже видели: {raffle['title']}")
             continue
 
-        if not passes_filter(raffle["_filter_text"]):
-            log.info(f"Отфильтровано (не токен/деньги): {raffle['title']}")
+        if not passes_enabled_filters(categories):
+            log.info(f"Отфильтровано по переключателям: {raffle['title']}")
             mark_seen(raffle["id"], raffle["title"])
             continue
 
         log.info(f"✅ Отправляем в Telegram: {raffle['title']}")
-        send_telegram(format_message(raffle))
+        send_telegram(format_message(raffle, categories))
         mark_seen(raffle["id"], raffle["title"])
 
 
@@ -424,7 +481,15 @@ def process_webhook_payload(payload):
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "running", "service": "alphabot-webhook"}), 200
+    return jsonify({
+        "status": "running",
+        "service": "alphabot-webhook",
+        "filters": {
+            "NFT_RAFFLE": NFT_RAFFLE,
+            "WL_RAFFLE": WL_RAFFLE,
+            "TOKEN_RAFFLE": TOKEN_RAFFLE,
+        }
+    }), 200
 
 
 @app.route("/webhook", methods=["POST"])
