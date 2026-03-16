@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 
 import requests
 from flask import Flask, request, jsonify
+# =========================================================
+# Инициализация при импорте (для gunicorn)
+# =========================================================
+
+init_db()
 
 # =========================================================
 # CONFIG — все значения берём из переменных окружения
@@ -24,14 +29,6 @@ DB_PATH = "seen.db"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-app = Flask(__name__)
-# Инициализируем БД при старте приложения (для gunicorn)
-init_db()
-
-# =========================================================
-# DB
-# =========================================================
-
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -44,6 +41,13 @@ def init_db():
     conn.commit()
     conn.close()
 
+app = Flask(__name__)
+# Инициализируем БД при старте приложения (для gunicorn)
+init_db()
+
+# =========================================================
+# DB
+# =========================================================
 
 def was_seen(raffle_id: str) -> bool:
     conn = sqlite3.connect(DB_PATH)
