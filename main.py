@@ -22,8 +22,8 @@ PORT = int(os.environ.get("PORT", 5000))
 DB_PATH = "seen.db"
 
 # Переключатели категорий
-NFT_RAFFLE = True
-WL_RAFFLE = True
+NFT_RAFFLE = False
+WL_RAFFLE = False
 TOKEN_RAFFLE = True
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
